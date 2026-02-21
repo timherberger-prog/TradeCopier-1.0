@@ -241,13 +241,13 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             return visible ?? true;
         }
 
-        private static bool? ReadBooleanMember(object target, string memberName)
+        private static bool? ReadBooleanMemberTc(object target, string memberName)
         {
-            object value = ReadMemberValue(target, memberName);
+            object value = ReadInstanceMemberTc(target, memberName);
             return value is bool flag ? flag : (bool?)null;
         }
 
-        private static object ReadMemberValue(object target, string memberName)
+        private static object ReadInstanceMemberTc(object target, string memberName)
         {
             if (target == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
