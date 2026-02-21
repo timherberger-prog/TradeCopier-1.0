@@ -7,6 +7,7 @@ using System.Linq;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Threading;
 using NinjaTrader.Cbi;
@@ -140,33 +141,39 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 .ToList();
         }
 
-        private static IEnumerable<Account> EnumerateStaticAccountSources()
+        private IEnumerable<Account> GetDisplayedAccountsFromControlCenterSnapshot()
         {
-            Type accountType = typeof(Account);
+            if (controlCenter == null)
+                return Enumerable.Empty<Account>();
 
-            foreach (string memberName in new[] { "All", "Accounts", "AllAccounts", "VisibleAccounts", "ConnectedAccounts" })
+            var collected = new List<Account>();
+
+            foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                collected.AddRange(ToAccounts(source));
+
+            if (collected.Count == 0)
+                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+
+            return collected;
+        }
+
+        private IEnumerable<Account> GetAllAccountsSnapshot()
+        {
+            var collected = new List<Account>();
+
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "All")));
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "Accounts")));
+
+            if (controlCenter != null)
             {
-                foreach (Account account in ToAccounts(ReadStaticMemberValue(accountType, memberName)))
-                    yield return account;
+                foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                    collected.AddRange(ToAccounts(source));
+
+                if (collected.Count == 0)
+                    collected.AddRange(GetAccountsFromVisualTree(controlCenter));
             }
 
-            // Fallback: alle statischen IEnumerable-Member von Account durchprobieren.
-            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-
-            foreach (PropertyInfo property in accountType.GetProperties(flags))
-            {
-                if (!property.CanRead)
-                    continue;
-
-                foreach (Account account in ToAccounts(property.GetValue(null, null)))
-                    yield return account;
-            }
-
-            foreach (FieldInfo field in accountType.GetFields(flags))
-            {
-                foreach (Account account in ToAccounts(field.GetValue(null)))
-                    yield return account;
-            }
+            return collected;
         }
 
         private static IEnumerable<object> EnumerateControlCenterAccountSources(ControlCenter cc)
@@ -195,23 +202,27 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                         yield return value;
                 }
             }
-        }
 
-        private static IEnumerable<Account> ToAccounts(object source)
-        {
-            if (source == null)
-                return Enumerable.Empty<Account>();
+            // Fallback: alle statischen IEnumerable-Member von Account durchprobieren.
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
-            if (source is ICollectionView view)
-                return view.Cast<object>().OfType<Account>();
+            foreach (PropertyInfo property in accountType.GetProperties(flags))
+            {
+                if (!property.CanRead)
+                    continue;
 
-            if (source is IEnumerable<Account> typed)
-                return typed;
+                foreach (Account account in ToAccounts(property.GetValue(null, null)))
+                    yield return account;
+            }
 
-            if (!(source is IEnumerable enumerable))
-                return Enumerable.Empty<Account>();
+            foreach (FieldInfo field in accountType.GetFields(flags))
+            {
+                var fromItems = ToAccounts(selector.Items);
+                if (fromItems.Any())
+                    return fromItems;
 
-            return enumerable.Cast<object>().OfType<Account>();
+                return ToAccounts(selector.ItemsSource);
+            }
         }
 
         private static bool IsAccountAvailable(Account account)
