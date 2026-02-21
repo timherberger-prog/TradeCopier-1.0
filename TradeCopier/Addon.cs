@@ -127,10 +127,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private IList<Account> GetAvailableAccounts()
         {
-            IEnumerable<Account> displayedAccounts = GetDisplayedAccountsFromControlCenterSnapshot();
-            IEnumerable<Account> source = displayedAccounts.Any()
-                ? displayedAccounts
-                : GetAllAccountsSnapshot();
+            // Alternative, robuste Quelle: direkte Account-Container statt VisualTree-Parsing.
+            IEnumerable<Account> source = EnumerateStaticAccountSources();
+
+            if (!source.Any() && controlCenter != null)
+                source = EnumerateControlCenterAccountSources(controlCenter).SelectMany(ToAccounts);
 
             return source
                 .Where(IsAccountAvailable)
@@ -201,41 +202,20 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                         yield return value;
                 }
             }
-        }
 
-        private static IEnumerable<Account> GetAccountsFromVisualTree(DependencyObject root)
-        {
-            if (root == null)
-                yield break;
+            // Fallback: alle statischen IEnumerable-Member von Account durchprobieren.
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
-            var queue = new Queue<DependencyObject>();
-            queue.Enqueue(root);
-
-            while (queue.Count > 0)
+            foreach (PropertyInfo property in accountType.GetProperties(flags))
             {
-                DependencyObject current = queue.Dequeue();
+                if (!property.CanRead)
+                    continue;
 
-                foreach (Account account in ReadAccountsFromControl(current))
+                foreach (Account account in ToAccounts(property.GetValue(null, null)))
                     yield return account;
-
-                int childCount = VisualTreeHelper.GetChildrenCount(current);
-                for (int i = 0; i < childCount; i++)
-                    queue.Enqueue(VisualTreeHelper.GetChild(current, i));
             }
-        }
 
-        private static IEnumerable<Account> ReadAccountsFromControl(DependencyObject current)
-        {
-            var frameworkElement = current as FrameworkElement;
-            string elementName = frameworkElement?.Name?.ToLowerInvariant() ?? string.Empty;
-            string typeName = current.GetType().Name.ToLowerInvariant();
-
-            bool isAccountControl = elementName.Contains("account") || typeName.Contains("account");
-            if (!isAccountControl)
-                return Enumerable.Empty<Account>();
-
-            var selector = current as Selector;
-            if (selector != null)
+            foreach (FieldInfo field in accountType.GetFields(flags))
             {
                 var fromItems = ToAccounts(selector.Items);
                 if (fromItems.Any())
@@ -243,33 +223,6 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
                 return ToAccounts(selector.ItemsSource);
             }
-
-            var itemsControl = current as ItemsControl;
-            if (itemsControl == null)
-                return Enumerable.Empty<Account>();
-
-            var visibleItems = ToAccounts(itemsControl.Items);
-            if (visibleItems.Any())
-                return visibleItems;
-
-            return ToAccounts(itemsControl.ItemsSource);
-        }
-
-        private static IEnumerable<Account> ToAccounts(object source)
-        {
-            if (source == null)
-                return Enumerable.Empty<Account>();
-
-            if (source is ICollectionView view)
-                return view.Cast<object>().OfType<Account>();
-
-            if (source is IEnumerable<Account> typed)
-                return typed;
-
-            if (!(source is IEnumerable enumerable))
-                return Enumerable.Empty<Account>();
-
-            return enumerable.Cast<object>().OfType<Account>();
         }
 
         private static bool IsAccountAvailable(Account account)
