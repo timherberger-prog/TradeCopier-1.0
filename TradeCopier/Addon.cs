@@ -7,6 +7,8 @@ using System.Linq;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Threading;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
@@ -127,10 +129,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private IList<Account> GetAvailableAccounts()
         {
-            List<Account> collected = CollectAccountsFromStaticSources();
+            // Alternative, robuste Quelle: direkte Account-Container statt VisualTree-Parsing.
+            IEnumerable<Account> source = EnumerateStaticAccountSources();
 
-            if (collected.Count == 0 && controlCenter != null)
-                collected.AddRange(CollectAccountsFromControlCenter(controlCenter));
+            if (!source.Any() && controlCenter != null)
+                source = EnumerateControlCenterAccountSources(controlCenter).SelectMany(ToAccounts);
 
             return collected
                 .Where(IsAccountAvailable)
@@ -140,33 +143,38 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 .ToList();
         }
 
-        private static List<Account> CollectAccountsFromStaticSources()
+        private IEnumerable<Account> GetDisplayedAccountsFromControlCenterSnapshot()
+        {
+            if (controlCenter == null)
+                return Enumerable.Empty<Account>();
+
+            var collected = new List<Account>();
+
+            foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                collected.AddRange(ToAccounts(source));
+
+            if (collected.Count == 0)
+                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+
+            return collected;
+        }
+
+        private IEnumerable<Account> GetAllAccountsSnapshot()
         {
             var collected = new List<Account>();
             Type accountType = typeof(Account);
 
-            string[] preferredNames =
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "All")));
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "Accounts")));
+
+            if (controlCenter != null)
             {
-                "All",
-                "Accounts",
-                "AllAccounts",
-                "VisibleAccounts",
-                "ConnectedAccounts"
-            };
+                foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                    collected.AddRange(ToAccounts(source));
 
-            foreach (string memberName in preferredNames)
-                collected.AddRange(ToAccounts(ReadStaticMemberValue(accountType, memberName)));
-
-            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
-
-            foreach (PropertyInfo property in accountType.GetProperties(flags))
-            {
-                if (property.CanRead)
-                    collected.AddRange(ToAccounts(property.GetValue(null, null)));
+                if (collected.Count == 0)
+                    collected.AddRange(GetAccountsFromVisualTree(controlCenter));
             }
-
-            foreach (FieldInfo field in accountType.GetFields(flags))
-                collected.AddRange(ToAccounts(field.GetValue(null)));
 
             return collected;
         }
@@ -190,34 +198,34 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
             foreach (object root in roots)
             {
-                if (root == null)
-                    continue;
-
-                foreach (string memberName in memberCandidates)
-                    collected.AddRange(ToAccounts(ReadMemberValue(root, memberName)));
+                foreach (string member in memberCandidates)
+                {
+                    object value = ReadMemberValue(root, member);
+                    if (value != null)
+                        yield return value;
+                }
             }
 
-            return collected;
-        }
+            // Fallback: alle statischen IEnumerable-Member von Account durchprobieren.
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
-        private static IEnumerable<Account> ToAccounts(object source)
-        {
-            if (source == null)
-                return Enumerable.Empty<Account>();
+            foreach (PropertyInfo property in accountType.GetProperties(flags))
+            {
+                if (!property.CanRead)
+                    continue;
 
-            ICollectionView view = source as ICollectionView;
-            if (view != null)
-                return view.Cast<object>().OfType<Account>();
+                foreach (Account account in ToAccounts(property.GetValue(null, null)))
+                    yield return account;
+            }
 
-            IEnumerable<Account> typed = source as IEnumerable<Account>;
-            if (typed != null)
-                return typed;
+            foreach (FieldInfo field in accountType.GetFields(flags))
+            {
+                var fromItems = ToAccounts(selector.Items);
+                if (fromItems.Any())
+                    return fromItems;
 
-            IEnumerable enumerable = source as IEnumerable;
-            if (enumerable == null)
-                return Enumerable.Empty<Account>();
-
-            return enumerable.Cast<object>().OfType<Account>();
+                return ToAccounts(selector.ItemsSource);
+            }
         }
 
         private static bool IsAccountAvailable(Account account)
@@ -270,6 +278,19 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return field.GetValue(null);
 
             return null;
+        }
+
+        private static object ReadStaticMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            return field?.GetValue(null);
         }
     }
 }
