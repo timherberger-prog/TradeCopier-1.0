@@ -116,36 +116,128 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private static IList<Account> GetAvailableAccounts()
         {
-            return (Account.All ?? Enumerable.Empty<Account>())
+            return GetAllAccountsSnapshot()
                 .Where(IsAccountAvailable)
+                .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
                 .OrderBy(account => account.Name)
                 .ToList();
         }
 
+        private static IEnumerable<Account> GetAllAccountsSnapshot()
+        {
+            var accounts = new List<Account>();
+
+            accounts.AddRange(EnumerateAccounts(Account.All));
+
+            Type globalsType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Globals");
+            if (globalsType != null)
+            {
+                accounts.AddRange(EnumerateAccounts(ReadMemberValue(globalsType, "Accounts")));
+                accounts.AddRange(EnumerateAccounts(ReadMemberValue(globalsType, "AllAccounts")));
+            }
+
+            Type connectionType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Connection");
+            if (connectionType != null)
+            {
+                object connections = ReadMemberValue(connectionType, "Connections")
+                                     ?? ReadMemberValue(connectionType, "All")
+                                     ?? ReadMemberValue(connectionType, "AllConnections");
+
+                foreach (object connection in EnumerateObjects(connections))
+                {
+                    accounts.AddRange(EnumerateAccounts(ReadMemberValue(connection, "Accounts")));
+                    accounts.AddRange(EnumerateAccounts(ReadMemberValue(connection, "AccountList")));
+                }
+            }
+
+            return accounts;
+        }
+
         private static bool IsAccountAvailable(Account account)
         {
-            if (account == null)
+            if (account == null || string.IsNullOrWhiteSpace(account.Name))
                 return false;
 
-            object connection = ReadMemberValue(account, "Connection") ?? ReadMemberValue(account, "AccountConnection");
-            if (connection == null)
+            if (IsSimulationAccount(account))
                 return true;
+
+            return IsConnectedAccount(account);
+        }
+
+        private static bool IsSimulationAccount(Account account)
+        {
+            string name = account?.Name?.Trim() ?? string.Empty;
+            if (name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            object isSimValue = ReadMemberValue(account, "IsSimAccount")
+                                ?? ReadMemberValue(account, "IsSimulation")
+                                ?? ReadMemberValue(account, "Simulation");
+
+            if (isSimValue is bool boolValue)
+                return boolValue;
+
+            return false;
+        }
+
+        private static bool IsConnectedAccount(Account account)
+        {
+            object connection = ReadMemberValue(account, "Connection")
+                                ?? ReadMemberValue(account, "AccountConnection");
 
             object statusValue = ReadMemberValue(connection, "Status")
                                  ?? ReadMemberValue(connection, "ConnectionStatus")
-                                 ?? ReadMemberValue(account, "ConnectionStatus");
+                                 ?? ReadMemberValue(account, "ConnectionStatus")
+                                 ?? ReadMemberValue(account, "Status");
 
+            string normalized = NormalizeStatus(statusValue);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                return normalized.EndsWith("connected", StringComparison.OrdinalIgnoreCase)
+                    && !normalized.Contains("disconnected");
+
+            object isConnected = ReadMemberValue(connection, "IsConnected")
+                                 ?? ReadMemberValue(account, "IsConnected");
+
+            if (isConnected is bool connected)
+                return connected;
+
+            // Für nicht-Sim-Konten ohne verwertbaren Verbindungsstatus konservativ ausblenden,
+            // damit getrennte Broker-Konten nicht in der Liste hängen bleiben.
+            return false;
+        }
+
+        private static string NormalizeStatus(object statusValue)
+        {
             if (statusValue == null)
-                return true;
+                return string.Empty;
 
             string normalized = statusValue.ToString().Trim().ToLowerInvariant();
+            return normalized;
+        }
 
-            if (normalized.Contains("disconnected") || normalized.Contains("connectionstatus.disconnected"))
-                return false;
+        private static IEnumerable<Account> EnumerateAccounts(object source)
+        {
+            return EnumerateObjects(source).OfType<Account>();
+        }
 
-            return normalized == "connected"
-                || normalized == "connectionstatus.connected"
-                || normalized.EndsWith(".connected", StringComparison.Ordinal);
+        private static IEnumerable<object> EnumerateObjects(object source)
+        {
+            if (source == null)
+                yield break;
+
+            if (source is string)
+                yield break;
+
+            if (source is System.Collections.IEnumerable enumerable)
+            {
+                foreach (object item in enumerable)
+                    yield return item;
+
+                yield break;
+            }
+
+            yield return source;
         }
 
         private static object ReadMemberValue(object target, string memberName)
@@ -154,12 +246,25 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return null;
 
             Type type = target.GetType();
-            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (property != null && property.CanRead)
                 return property.GetValue(target, null);
 
-            FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             return field?.GetValue(target);
+        }
+
+        private static object ReadMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            return field?.GetValue(null);
         }
     }
 }
