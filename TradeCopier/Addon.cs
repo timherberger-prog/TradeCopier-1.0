@@ -118,6 +118,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         {
             return GetAllAccountsSnapshot()
                 .Where(IsAccountAvailable)
+                .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
                 .OrderBy(account => account.Name)
                 .ToList();
         }
@@ -163,11 +165,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return null;
 
             Type type = target.GetType();
-            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (property != null && property.CanRead)
                 return property.GetValue(target, null);
 
-            FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             return field?.GetValue(target);
         }
 
