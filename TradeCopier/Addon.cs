@@ -18,7 +18,7 @@ using NinjaTrader.NinjaScript;
 
 namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 {
-    public class TradeCopierAddon : AddOnBase
+    public class TradeCopierAddonV3 : AddOnBase
     {
         private NTMenuItem menuItem;
         private NTMenuItem toolsMenu;
@@ -30,11 +30,14 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
+            {
                 Name = "Trade Copier";
+            }
             else if (State == State.Active)
             {
                 engine = new TradeCopierEngine();
-                accountSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                accountSyncTimer = new DispatcherTimer();
+                accountSyncTimer.Interval = TimeSpan.FromSeconds(2);
                 accountSyncTimer.Tick += OnAccountSyncTick;
             }
             else if (State == State.Terminated)
@@ -46,7 +49,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                     accountSyncTimer = null;
                 }
 
-                engine?.Dispose();
+                if (engine != null)
+                    engine.Dispose();
             }
         }
 
@@ -61,12 +65,9 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (menuItem != null)
                 return;
 
-            menuItem = new NTMenuItem
-            {
-                Header = "Trade Copier",
-                Style = Application.Current.TryFindResource("MainMenuItem") as Style
-            };
-
+            menuItem = new NTMenuItem();
+            menuItem.Header = "Trade Copier";
+            menuItem.Style = Application.Current.TryFindResource("MainMenuItem") as Style;
             menuItem.Click += OnMenuClick;
 
             toolsMenu = cc.MainMenu
@@ -87,7 +88,10 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (window is ControlCenter)
             {
                 menuItem.Click -= OnMenuClick;
-                (menuItem.Parent as System.Windows.Controls.MenuItem)?.Items.Remove(menuItem);
+                MenuItem parentMenu = menuItem.Parent as MenuItem;
+                if (parentMenu != null)
+                    parentMenu.Items.Remove(menuItem);
+
                 toolsMenu = null;
                 menuItem = null;
 
@@ -124,8 +128,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (window == null)
                 return;
 
-            window.LoadAccounts(GetAvailableAccounts());
-        }
+            window.LoadAccounts(GetAvailableAccountsV3());
 
         private IList<Account> GetAvailableAccounts()
         {
@@ -253,13 +256,12 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private static object ReadInstanceMemberTc(object target, string memberName)
         {
-            if (target == null || string.IsNullOrWhiteSpace(memberName))
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            Type type = target.GetType();
-            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
             if (property != null && property.CanRead)
-                return property.GetValue(target, null);
+                return property.GetValue(null, null);
 
             FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (field != null)
