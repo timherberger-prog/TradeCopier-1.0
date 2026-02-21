@@ -105,14 +105,16 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             }
 
             window = new TradeCopierWindow(engine);
-            window.Closed += (_, __) =>
+            window.Closed += (s, a) =>
             {
                 window = null;
-                accountSyncTimer?.Stop();
+                if (accountSyncTimer != null)
+                    accountSyncTimer.Stop();
             };
 
             window.LoadAccounts(GetAvailableAccounts());
-            accountSyncTimer?.Start();
+            if (accountSyncTimer != null)
+                accountSyncTimer.Start();
 
             window.Show();
         }
@@ -133,7 +135,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (!source.Any() && controlCenter != null)
                 source = EnumerateControlCenterAccountSources(controlCenter).SelectMany(ToAccounts);
 
-            return source
+            return collected
                 .Where(IsAccountAvailable)
                 .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
@@ -160,6 +162,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         private IEnumerable<Account> GetAllAccountsSnapshot()
         {
             var collected = new List<Account>();
+            Type accountType = typeof(Account);
 
             collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "All")));
             collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "Accounts")));
@@ -176,13 +179,13 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             return collected;
         }
 
-        private static IEnumerable<object> EnumerateControlCenterAccountSources(ControlCenter cc)
+        private static List<Account> CollectAccountsFromControlCenter(ControlCenter cc)
         {
+            var collected = new List<Account>();
             if (cc == null)
-                yield break;
+                return collected;
 
-            object dataContext = cc.DataContext;
-            object[] roots = { cc, dataContext };
+            object[] roots = { cc, cc.DataContext };
             string[] memberCandidates =
             {
                 "Accounts",
@@ -193,7 +196,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 "ActiveAccounts"
             };
 
-            foreach (object root in roots.Where(r => r != null))
+            foreach (object root in roots)
             {
                 foreach (string member in memberCandidates)
                 {
@@ -255,7 +258,26 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return property.GetValue(target, null);
 
             FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            return field?.GetValue(target);
+            if (field != null)
+                return field.GetValue(target);
+
+            return null;
+        }
+
+        private static object ReadStaticMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null)
+                return field.GetValue(null);
+
+            return null;
         }
 
         private static object ReadStaticMemberValue(Type type, string memberName)
