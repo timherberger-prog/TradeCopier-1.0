@@ -2,13 +2,12 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
-using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Tools;
@@ -104,14 +103,16 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             }
 
             window = new TradeCopierWindow(engine);
-            window.Closed += (_, __) =>
+            window.Closed += (s, a) =>
             {
                 window = null;
-                accountSyncTimer?.Stop();
+                if (accountSyncTimer != null)
+                    accountSyncTimer.Stop();
             };
 
             window.LoadAccounts(GetAvailableAccounts());
-            accountSyncTimer?.Start();
+            if (accountSyncTimer != null)
+                accountSyncTimer.Start();
 
             window.Show();
         }
@@ -126,12 +127,12 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private IList<Account> GetAvailableAccounts()
         {
-            IEnumerable<Account> displayedAccounts = GetDisplayedAccountsFromControlCenterSnapshot();
-            IEnumerable<Account> source = displayedAccounts.Any()
-                ? displayedAccounts
-                : GetAllAccountsSnapshot();
+            List<Account> collected = CollectAccountsFromStaticSources();
 
-            return source
+            if (collected.Count == 0 && controlCenter != null)
+                collected.AddRange(CollectAccountsFromControlCenter(controlCenter));
+
+            return collected
                 .Where(IsAccountAvailable)
                 .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
@@ -139,147 +140,44 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 .ToList();
         }
 
-        private IEnumerable<Account> GetDisplayedAccountsFromControlCenterSnapshot()
+        private static List<Account> CollectAccountsFromStaticSources()
         {
-            if (controlCenter == null)
-                return Enumerable.Empty<Account>();
-
             var collected = new List<Account>();
+            Type accountType = typeof(Account);
 
-            foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
-                collected.AddRange(ToAccounts(source));
-
-            if (collected.Count == 0)
-                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
-
-            return collected;
-        }
-
-        private static IEnumerable<Account> GetAllAccountsSnapshot()
-        {
-            if (controlCenter == null)
-                return Enumerable.Empty<Account>();
-
-            var collected = new List<Account>();
-
-            // 1) Bevorzugt explizite "sichtbare/angezeigte" Member
-            foreach (object source in EnumerateControlCenterDisplayedAccountSources(controlCenter))
-                collected.AddRange(ToAccounts(source));
-
-            // 2) Falls nichts gefunden wurde: Visual-Tree-basierte Ermittlung aus Account-Controls
-            if (collected.Count == 0)
-                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
-
-            return collected;
-        }
-
-        private static IEnumerable<object> EnumerateControlCenterDisplayedAccountSources(ControlCenter cc)
-        {
-            if (cc == null)
-                yield break;
-
-            object dataContext = cc.DataContext;
-            object[] roots = { cc, dataContext };
-
-            // Nur "display/visible" Kandidaten; KEIN "Accounts"/"AllAccounts", um
-            // keine globale, persistente Liste zu übernehmen.
-            string[] memberCandidates =
+            string[] preferredNames =
             {
-                "DisplayedAccounts",
+                "All",
+                "Accounts",
+                "AllAccounts",
                 "VisibleAccounts",
-                "FilteredAccounts",
-                "SelectedAccounts",
-                "ActiveAccounts"
+                "ConnectedAccounts"
             };
 
-            foreach (object root in roots.Where(r => r != null))
+            foreach (string memberName in preferredNames)
+                collected.AddRange(ToAccounts(ReadStaticMemberValue(accountType, memberName)));
+
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+
+            foreach (PropertyInfo property in accountType.GetProperties(flags))
             {
-                foreach (string member in memberCandidates)
-                {
-                    object value = ReadMemberValue(root, member);
-                    if (value != null)
-                        yield return value;
-                }
-            }
-        }
-
-        private static IEnumerable<Account> GetAccountsFromVisualTree(DependencyObject root)
-        {
-            if (root == null)
-                yield break;
-
-            var queue = new Queue<DependencyObject>();
-            queue.Enqueue(root);
-
-            while (queue.Count > 0)
-            {
-                DependencyObject current = queue.Dequeue();
-
-                foreach (Account account in ReadAccountsFromControl(current))
-                    yield return account;
-
-                int childCount = VisualTreeHelper.GetChildrenCount(current);
-                for (int i = 0; i < childCount; i++)
-                    queue.Enqueue(VisualTreeHelper.GetChild(current, i));
-            }
-        }
-
-        private static IEnumerable<Account> ReadAccountsFromControl(DependencyObject current)
-        {
-            var frameworkElement = current as FrameworkElement;
-            string elementName = frameworkElement?.Name?.ToLowerInvariant() ?? string.Empty;
-            string typeName = current.GetType().Name.ToLowerInvariant();
-
-            bool isAccountControl = elementName.Contains("account") || typeName.Contains("account");
-            if (!isAccountControl)
-                return Enumerable.Empty<Account>();
-
-            var selector = current as Selector;
-            if (selector != null)
-            {
-                // Items repräsentiert bei gefilterten Views die sichtbaren Einträge.
-                var fromItems = ToAccounts(selector.Items);
-                if (fromItems.Any())
-                    return fromItems;
-
-                return ToAccounts(selector.ItemsSource);
+                if (property.CanRead)
+                    collected.AddRange(ToAccounts(property.GetValue(null, null)));
             }
 
-            var itemsControl = current as ItemsControl;
-            if (itemsControl == null)
-                return Enumerable.Empty<Account>();
+            foreach (FieldInfo field in accountType.GetFields(flags))
+                collected.AddRange(ToAccounts(field.GetValue(null)));
 
-            var visibleItems = ToAccounts(itemsControl.Items);
-            if (visibleItems.Any())
-                return visibleItems;
-
-            return ToAccounts(itemsControl.ItemsSource);
+            return collected;
         }
 
-        private static IEnumerable<Account> ToAccounts(object source)
+        private static List<Account> CollectAccountsFromControlCenter(ControlCenter cc)
         {
-            if (source == null)
-                return Enumerable.Empty<Account>();
-
-            if (source is ICollectionView view)
-                return view.Cast<object>().OfType<Account>();
-
-            if (source is IEnumerable<Account> typed)
-                return typed;
-
-            if (!(source is IEnumerable enumerable))
-                return Enumerable.Empty<Account>();
-
-            return enumerable.Cast<object>().OfType<Account>();
-        }
-
-        private static IEnumerable<object> EnumerateControlCenterAccountSources(ControlCenter cc)
-        {
+            var collected = new List<Account>();
             if (cc == null)
-                yield break;
+                return collected;
 
-            object dataContext = cc.DataContext;
-            object[] roots = { cc, dataContext };
+            object[] roots = { cc, cc.DataContext };
             string[] memberCandidates =
             {
                 "Accounts",
@@ -290,57 +188,16 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 "ActiveAccounts"
             };
 
-            foreach (object root in roots.Where(r => r != null))
+            foreach (object root in roots)
             {
-                foreach (string member in memberCandidates)
-                {
-                    object value = ReadMemberValue(root, member);
-                    if (value != null)
-                        yield return value;
-                }
+                if (root == null)
+                    continue;
+
+                foreach (string memberName in memberCandidates)
+                    collected.AddRange(ToAccounts(ReadMemberValue(root, memberName)));
             }
-        }
 
-        private static IEnumerable<Account> GetAccountsFromVisualTree(DependencyObject root)
-        {
-            if (root == null)
-                yield break;
-
-            var queue = new Queue<DependencyObject>();
-            queue.Enqueue(root);
-
-            while (queue.Count > 0)
-            {
-                DependencyObject current = queue.Dequeue();
-
-                foreach (Account account in ReadAccountsFromControl(current))
-                    yield return account;
-
-                int childCount = VisualTreeHelper.GetChildrenCount(current);
-                for (int i = 0; i < childCount; i++)
-                    queue.Enqueue(VisualTreeHelper.GetChild(current, i));
-            }
-        }
-
-        private static IEnumerable<Account> ReadAccountsFromControl(DependencyObject current)
-        {
-            var frameworkElement = current as FrameworkElement;
-            string elementName = frameworkElement?.Name?.ToLowerInvariant() ?? string.Empty;
-            string typeName = current.GetType().Name.ToLowerInvariant();
-
-            bool isAccountControl = elementName.Contains("account") || typeName.Contains("account");
-            if (!isAccountControl)
-                return Enumerable.Empty<Account>();
-
-            var selector = current as Selector;
-            if (selector?.ItemsSource != null)
-                return ToAccounts(selector.ItemsSource);
-
-            var itemsControl = current as ItemsControl;
-            if (itemsControl == null)
-                return Enumerable.Empty<Account>();
-
-            return ToAccounts(itemsControl.ItemsSource).Concat(ToAccounts(itemsControl.Items));
+            return collected;
         }
 
         private static IEnumerable<Account> ToAccounts(object source)
@@ -348,10 +205,16 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (source == null)
                 return Enumerable.Empty<Account>();
 
-            if (source is IEnumerable<Account> typed)
+            ICollectionView view = source as ICollectionView;
+            if (view != null)
+                return view.Cast<object>().OfType<Account>();
+
+            IEnumerable<Account> typed = source as IEnumerable<Account>;
+            if (typed != null)
                 return typed;
 
-            if (!(source is IEnumerable enumerable))
+            IEnumerable enumerable = source as IEnumerable;
+            if (enumerable == null)
                 return Enumerable.Empty<Account>();
 
             return enumerable.Cast<object>().OfType<Account>();
@@ -362,7 +225,6 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (account == null || string.IsNullOrWhiteSpace(account.Name))
                 return false;
 
-            // Wenn NT intern ein Sichtbarkeits-Flag bereitstellt, dieses respektieren.
             bool? visible = ReadBooleanMember(account, "IsVisible")
                             ?? ReadBooleanMember(account, "Visible")
                             ?? ReadBooleanMember(account, "IsDisplayed")
@@ -388,7 +250,26 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return property.GetValue(target, null);
 
             FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            return field?.GetValue(target);
+            if (field != null)
+                return field.GetValue(target);
+
+            return null;
+        }
+
+        private static object ReadStaticMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null)
+                return field.GetValue(null);
+
+            return null;
         }
     }
 }
