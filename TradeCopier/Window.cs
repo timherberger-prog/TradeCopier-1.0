@@ -18,6 +18,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         private CheckBox enabledCheck;
         private Border statusBar;
         private TextBlock statusText;
+        private string configuredLeadName;
+        private HashSet<string> configuredFollowerNames = new HashSet<string>();
 
         public TradeCopierWindow(TradeCopierEngine engine)
         {
@@ -56,6 +58,21 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
             foreach (var account in accountList.Where(a => selectedFollowerNames.Contains(a.Name)))
                 followerAccountsList.SelectedItems.Add(account);
+
+            RefreshEngineAccountBindings(accountList);
+        }
+
+        private void RefreshEngineAccountBindings(IList<Account> accountList)
+        {
+            if (string.IsNullOrWhiteSpace(configuredLeadName))
+                return;
+
+            var lead = accountList.FirstOrDefault(a => a.Name == configuredLeadName);
+            var followers = accountList
+                .Where(a => configuredFollowerNames.Contains(a.Name) && a != lead)
+                .ToList();
+
+            engine.Configure(lead, followers);
         }
 
         private UIElement BuildLayout()
@@ -119,6 +136,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         {
             var lead = leadAccountCombo.SelectedItem as Account;
             var followers = followerAccountsList.SelectedItems.Cast<Account>().ToList();
+
+            configuredLeadName = lead?.Name;
+            configuredFollowerNames = followers
+                .Select(a => a.Name)
+                .ToHashSet();
 
             engine.Configure(lead, followers);
 
