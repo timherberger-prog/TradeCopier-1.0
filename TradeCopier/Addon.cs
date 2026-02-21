@@ -20,6 +20,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         private TradeCopierEngine engine;
         private TradeCopierWindow window;
         private DispatcherTimer accountSyncTimer;
+        private ControlCenter controlCenter;
 
         protected override void OnStateChange()
         {
@@ -49,6 +50,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             ControlCenter cc = window as ControlCenter;
             if (cc == null)
                 return;
+
+            controlCenter = cc;
 
             if (menuItem != null)
                 return;
@@ -82,6 +85,9 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 (menuItem.Parent as System.Windows.Controls.MenuItem)?.Items.Remove(menuItem);
                 toolsMenu = null;
                 menuItem = null;
+
+                if (ReferenceEquals(controlCenter, window))
+                    controlCenter = null;
             }
         }
 
@@ -114,7 +120,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             window.LoadAccounts(GetAvailableAccounts());
         }
 
-        private static IList<Account> GetAvailableAccounts()
+        private IList<Account> GetAvailableAccounts()
         {
             return GetAllAccountsSnapshot()
                 .Where(IsAccountAvailable)
