@@ -79,7 +79,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         protected override void OnWindowDestroyed(Window window)
         {
-            if (menuItem == null)
+            if (!(window is ControlCenter) || menuItem == null)
                 return;
 
             if (window is ControlCenter)
@@ -93,9 +93,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 menuItem = null;
                 toolsMenu = null;
 
-                if (ReferenceEquals(controlCenter, window))
-                    controlCenter = null;
-            }
+            menuItem = null;
+            toolsMenu = null;
+
+            if (ReferenceEquals(controlCenter, window))
+                controlCenter = null;
         }
 
         private void OnMenuClick(object sender, RoutedEventArgs e)
@@ -121,14 +123,16 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             window.Show();
         }
 
-        private void OnAccountSyncTick(object sender, EventArgs e)
+        private void OnTradeCopierClosed(object sender, EventArgs e)
         {
-            if (window == null)
-                return;
+            if (window != null)
+                window.Closed -= OnTradeCopierClosed;
+
+            window = null;
 
             window.LoadAccounts(GetAvailableAccountsV3());
 
-        private IList<Account> GetAvailableAccounts()
+        private void OnRefreshTimerTick(object sender, EventArgs e)
         {
             // Alternative, robuste Quelle: direkte Account-Container statt VisualTree-Parsing.
             IEnumerable<Account> source = EnumerateStaticAccountSources();
@@ -144,7 +148,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 .ToList();
         }
 
-        private IEnumerable<Account> GetDisplayedAccountsFromControlCenterSnapshot()
+        // Compatibility entry-point name retained for NinjaScript cache collisions.
+        private IList<Account> GetAvailableAccountsV3()
         {
             if (controlCenter == null)
                 return Enumerable.Empty<Account>();
@@ -155,10 +160,18 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
                 collected.AddRange(ToAccounts(source));
 
-            if (collected.Count == 0)
-                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+            if (collected.Count == 0 && controlCenter != null)
+            {
+                foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                    collected.AddRange(ToAccounts(source));
+            }
 
-            return collected;
+            return collected
+                .Where(IsAccountAvailable)
+                .GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderBy(a => a.Name)
+                .ToList();
         }
 
         private IEnumerable<Account> GetAllAccountsSnapshot()
@@ -200,7 +213,10 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
             foreach (object root in roots)
             {
-                foreach (string member in memberCandidates)
+                if (root == null)
+                    continue;
+
+                foreach (string member in memberNames)
                 {
                     object value = ReadMemberValue(root, member);
                     if (value != null)
