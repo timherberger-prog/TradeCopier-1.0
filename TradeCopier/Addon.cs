@@ -12,6 +12,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
     public class TradeCopierAddon : AddOnBase
     {
         private NTMenuItem menuItem;
+        private NTMenuItem toolsMenu;
         private TradeCopierEngine engine;
         private TradeCopierWindow window;
 
@@ -31,6 +32,9 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (cc == null)
                 return;
 
+            if (menuItem != null)
+                return;
+
             menuItem = new NTMenuItem
             {
                 Header = "Trade Copier",
@@ -38,7 +42,15 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             };
 
             menuItem.Click += OnMenuClick;
-            cc.MainMenu.Add(menuItem);
+
+            toolsMenu = cc.MainMenu
+                .OfType<NTMenuItem>()
+                .FirstOrDefault(item => item.Name == "ControlCenterMenuItemTools");
+
+            if (toolsMenu != null)
+                toolsMenu.Items.Add(menuItem);
+            else
+                cc.MainMenu.Add(menuItem);
         }
 
         protected override void OnWindowDestroyed(Window window)
@@ -46,9 +58,13 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (menuItem == null)
                 return;
 
-            menuItem.Click -= OnMenuClick;
-            (menuItem.Parent as System.Windows.Controls.MenuItem)?.Items.Remove(menuItem);
-            menuItem = null;
+            if (window is ControlCenter)
+            {
+                menuItem.Click -= OnMenuClick;
+                (menuItem.Parent as System.Windows.Controls.MenuItem)?.Items.Remove(menuItem);
+                toolsMenu = null;
+                menuItem = null;
+            }
         }
 
         private void OnMenuClick(object sender, RoutedEventArgs e)
