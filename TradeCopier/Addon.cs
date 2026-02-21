@@ -117,6 +117,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         private static IList<Account> GetAvailableAccounts()
         {
             return GetAllAccountsSnapshot()
+                .Where(IsAccountAvailable)
                 .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
                 .OrderBy(account => account.Name)
@@ -125,100 +126,37 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private static IEnumerable<Account> GetAllAccountsSnapshot()
         {
-            var simAccounts = new List<Account>();
-            simAccounts.AddRange(EnumerateAccounts(Account.All).Where(IsSimulationAccount));
+            IEnumerable<Account> directAccounts = Account.All;
+            if (directAccounts != null && directAccounts.Any())
+                return directAccounts;
 
             Type globalsType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Globals");
-            if (globalsType != null)
-            {
-                simAccounts.AddRange(EnumerateAccounts(ReadMemberValue(globalsType, "Accounts")).Where(IsSimulationAccount));
-                simAccounts.AddRange(EnumerateAccounts(ReadMemberValue(globalsType, "AllAccounts")).Where(IsSimulationAccount));
-            }
+            if (globalsType == null)
+                return Enumerable.Empty<Account>();
 
-            var connectedBrokerAccounts = new List<Account>();
-            Type connectionType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Connection");
-            if (connectionType != null)
-            {
-                object connections = ReadMemberValue(connectionType, "Connections")
-                                     ?? ReadMemberValue(connectionType, "All")
-                                     ?? ReadMemberValue(connectionType, "AllConnections");
+            object reflectedAccounts = ReadMemberValue(globalsType, "Accounts")
+                                      ?? ReadMemberValue(globalsType, "AllAccounts");
 
-                foreach (object connection in EnumerateObjects(connections))
-                {
-                    if (!IsConnectionConnected(connection))
-                        continue;
+            IEnumerable<Account> enumerable = reflectedAccounts as IEnumerable<Account>;
+            if (enumerable != null)
+                return enumerable;
 
-                    connectedBrokerAccounts.AddRange(EnumerateAccounts(ReadMemberValue(connection, "Accounts")));
-                    connectedBrokerAccounts.AddRange(EnumerateAccounts(ReadMemberValue(connection, "AccountList")));
-                }
-            }
+            var objectEnumerable = reflectedAccounts as System.Collections.IEnumerable;
+            if (objectEnumerable == null)
+                return Enumerable.Empty<Account>();
 
-            // Sim-Konten immer sichtbar; Broker-Konten nur aus aktuell verbundenen Connections.
-            return simAccounts
-                .Concat(connectedBrokerAccounts.Where(account => !IsSimulationAccount(account)))
-                .Where(account => account != null && !string.IsNullOrWhiteSpace(account.Name));
+            return objectEnumerable.Cast<object>().OfType<Account>();
         }
 
-        private static bool IsSimulationAccount(Account account)
+        private static bool IsAccountAvailable(Account account)
         {
-            // Absichtlich streng: Nur eindeutig benannte Sim-/Playback-Konten.
-            // Reflektierte Flags wie IsSimulation/Simulation können je nach API-Version
-            // auch bei Live-Brokerkonten true liefern und dadurch die Filterung aushebeln.
-            string name = account?.Name?.Trim() ?? string.Empty;
-            return name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsConnectionConnected(object connection)
-        {
-            if (connection == null)
+            if (account == null)
                 return false;
 
-            object statusValue = ReadMemberValue(connection, "Status")
-                                 ?? ReadMemberValue(connection, "ConnectionStatus");
-
-            string normalized = NormalizeStatus(statusValue);
-            if (!string.IsNullOrWhiteSpace(normalized))
-                return normalized.EndsWith("connected", StringComparison.OrdinalIgnoreCase)
-                    && !normalized.Contains("disconnected");
-
-            object isConnected = ReadMemberValue(connection, "IsConnected");
-            if (isConnected is bool connected)
-                return connected;
-
-            return false;
-        }
-
-        private static string NormalizeStatus(object statusValue)
-        {
-            if (statusValue == null)
-                return string.Empty;
-
-            return statusValue.ToString().Trim().ToLowerInvariant();
-        }
-
-        private static IEnumerable<Account> EnumerateAccounts(object source)
-        {
-            return EnumerateObjects(source).OfType<Account>();
-        }
-
-        private static IEnumerable<object> EnumerateObjects(object source)
-        {
-            if (source == null)
-                yield break;
-
-            if (source is string)
-                yield break;
-
-            if (source is System.Collections.IEnumerable enumerable)
-            {
-                foreach (object item in enumerable)
-                    yield return item;
-
-                yield break;
-            }
-
-            yield return source;
+            // Für die Anzeige im TradeCopier sollen alle im Control Center gelisteten Konten
+            // sichtbar bleiben. Der tatsächliche Orderfluss wird später vom NinjaTrader-Status
+            // gesteuert; die Auswahl sollte daher nicht durch Statusheuristiken gefiltert werden.
+            return !string.IsNullOrWhiteSpace(account.Name);
         }
 
         private static object ReadMemberValue(object target, string memberName)
@@ -240,11 +178,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public);
             if (property != null && property.CanRead)
                 return property.GetValue(null, null);
 
-            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public);
             return field?.GetValue(null);
         }
     }
