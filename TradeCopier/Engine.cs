@@ -18,6 +18,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
     /// </summary>
     public class TradeCopierEngine
     {
+        public event Action<bool> StatusChanged;
+
         private readonly object sync = new object();
         private readonly HashSet<string> copiedOrderIds = new HashSet<string>();
 
@@ -45,11 +47,13 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         public void Start()
         {
             IsEnabled = true;
+            StatusChanged?.Invoke(IsEnabled);
         }
 
         public void Stop()
         {
             IsEnabled = false;
+            StatusChanged?.Invoke(IsEnabled);
         }
 
         public void Dispose()
@@ -57,6 +61,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             lock (sync)
             {
                 IsEnabled = false;
+                StatusChanged?.Invoke(IsEnabled);
                 UnsubscribeInternal();
                 followerAccounts.Clear();
                 leadAccount = null;

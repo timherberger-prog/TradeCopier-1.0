@@ -2,8 +2,8 @@
 
 Diese erste Version setzt ein AddOn mit klassischer NinjaTrader-Struktur auf:
 
-- `Addon.cs`: Lifecycle + Menüeintrag im Control Center
-- `Window.cs`: einfache GUI zur Auswahl von Lead- und Follow-Konten
+- `Addon.cs`: Lifecycle + Menüeintrag im Control Center + Account-Synchronisierung
+- `Window.cs`: GUI zur Auswahl von Lead- und Follow-Konten inkl. Statusleiste
 - `Engine.cs`: Kopierlogik für Entries + Flatten bei Lead-Protection
 
 ## Aktuelle Logik
@@ -12,6 +12,8 @@ Diese erste Version setzt ein AddOn mit klassischer NinjaTrader-Struktur auf:
 2. Auf **Execution-Events** des Lead-Kontos werden nur **Entry-Ausführungen** (`Buy`, `SellShort`) auf Follow-Konten gespiegelt.
 3. **Protection-Orders** (SL/TP) werden **nicht** auf Follow-Konten angelegt.
 4. Wenn am Lead eine Protection-Order ausführt (z. B. Stop oder Target), werden die Follow-Konten auf demselben Instrument per Market-Order geflattet.
+5. Die UI zeigt eine **Statusleiste** (grün/rot) für aktiv/gestoppt.
+6. Die Kontolisten werden periodisch mit den aktuell im Control Center verfügbaren/verbundenen Konten synchronisiert.
 
 ## Wichtiger Hinweis
 
