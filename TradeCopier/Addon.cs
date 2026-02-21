@@ -24,7 +24,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         private NTMenuItem toolsMenu;
         private TradeCopierEngine engine;
         private TradeCopierWindow window;
-        private DispatcherTimer accountSyncTimer;
+        private DispatcherTimer refreshTimer;
         private ControlCenter controlCenter;
 
         protected override void OnStateChange()
@@ -42,11 +42,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             }
             else if (State == State.Terminated)
             {
-                if (accountSyncTimer != null)
+                if (refreshTimer != null)
                 {
-                    accountSyncTimer.Tick -= OnAccountSyncTick;
-                    accountSyncTimer.Stop();
-                    accountSyncTimer = null;
+                    refreshTimer.Tick -= OnRefreshTimerTick;
+                    refreshTimer.Stop();
+                    refreshTimer = null;
                 }
 
                 if (engine != null)
@@ -70,10 +70,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             menuItem.Style = Application.Current.TryFindResource("MainMenuItem") as Style;
             menuItem.Click += OnMenuClick;
 
-            toolsMenu = cc.MainMenu
-                .OfType<NTMenuItem>()
-                .FirstOrDefault(item => item.Name == "ControlCenterMenuItemTools");
-
+            toolsMenu = cc.MainMenu.OfType<NTMenuItem>().FirstOrDefault(item => item.Name == "ControlCenterMenuItemTools");
             if (toolsMenu != null)
                 toolsMenu.Items.Add(menuItem);
             else
@@ -94,6 +91,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
                 toolsMenu = null;
                 menuItem = null;
+                toolsMenu = null;
 
                 if (ReferenceEquals(controlCenter, window))
                     controlCenter = null;
@@ -228,7 +226,9 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 if (fromItems.Any())
                     return fromItems;
 
-                return ToAccounts(selector.ItemsSource);
+                object dc = controlCenter.DataContext;
+                AppendAccountsFromObject(result, ReadInstanceValue(dc, "Accounts"));
+                AppendAccountsFromObject(result, ReadInstanceValue(dc, "AllAccounts"));
             }
         }
 
