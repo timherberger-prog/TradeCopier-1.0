@@ -2,10 +2,13 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Threading;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
@@ -15,7 +18,7 @@ using NinjaTrader.NinjaScript;
 
 namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 {
-    public class TradeCopierAddonCleanV4 : AddOnBase
+    public class TradeCopierAddonV3 : AddOnBase
     {
         private NTMenuItem menuItem;
         private NTMenuItem toolsMenu;
@@ -33,9 +36,9 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             else if (State == State.Active)
             {
                 engine = new TradeCopierEngine();
-                refreshTimer = new DispatcherTimer();
-                refreshTimer.Interval = TimeSpan.FromSeconds(2);
-                refreshTimer.Tick += OnRefreshTimerTick;
+                accountSyncTimer = new DispatcherTimer();
+                accountSyncTimer.Interval = TimeSpan.FromSeconds(2);
+                accountSyncTimer.Tick += OnAccountSyncTick;
             }
             else if (State == State.Terminated)
             {
@@ -82,10 +85,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (window is ControlCenter)
             {
                 menuItem.Click -= OnMenuClick;
-                MenuItem parent = menuItem.Parent as MenuItem;
-                if (parent != null)
-                    parent.Items.Remove(menuItem);
+                MenuItem parentMenu = menuItem.Parent as MenuItem;
+                if (parentMenu != null)
+                    parentMenu.Items.Remove(menuItem);
 
+                toolsMenu = null;
                 menuItem = null;
                 toolsMenu = null;
 
@@ -103,116 +107,196 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             }
 
             window = new TradeCopierWindow(engine);
-            window.Closed += OnTradeCopierClosed;
-            window.LoadAccounts(BuildAccountSnapshot());
+            window.Closed += (s, a) =>
+            {
+                window = null;
+                if (accountSyncTimer != null)
+                    accountSyncTimer.Stop();
+            };
 
-            if (refreshTimer != null)
-                refreshTimer.Start();
+            window.LoadAccounts(GetAvailableAccounts());
+            if (accountSyncTimer != null)
+                accountSyncTimer.Start();
 
             window.Show();
         }
 
-        private void OnTradeCopierClosed(object sender, EventArgs e)
-        {
-            if (window != null)
-                window.Closed -= OnTradeCopierClosed;
-
-            window = null;
-
-            if (refreshTimer != null)
-                refreshTimer.Stop();
-        }
-
-        private void OnRefreshTimerTick(object sender, EventArgs e)
+        private void OnAccountSyncTick(object sender, EventArgs e)
         {
             if (window == null)
                 return;
 
-            window.LoadAccounts(BuildAccountSnapshot());
+            window.LoadAccounts(GetAvailableAccountsV3());
+
+        private IList<Account> GetAvailableAccounts()
+        {
+            // Alternative, robuste Quelle: direkte Account-Container statt VisualTree-Parsing.
+            IEnumerable<Account> source = EnumerateStaticAccountSources();
+
+            if (!source.Any() && controlCenter != null)
+                source = EnumerateControlCenterAccountSources(controlCenter).SelectMany(ToAccounts);
+
+            return collected
+                .Where(IsAccountAvailable)
+                .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderBy(account => account.Name)
+                .ToList();
         }
 
-        private IList<Account> BuildAccountSnapshot()
+        private IEnumerable<Account> GetDisplayedAccountsFromControlCenterSnapshot()
         {
-            var result = new List<Account>();
+            if (controlCenter == null)
+                return Enumerable.Empty<Account>();
 
-            AppendAccountsFromObject(result, ReadStaticValue(typeof(Account), "All"));
-            AppendAccountsFromObject(result, ReadStaticValue(typeof(Account), "Accounts"));
-            AppendAccountsFromObject(result, ReadStaticValue(typeof(Account), "AllAccounts"));
-            AppendAccountsFromObject(result, ReadStaticValue(typeof(Account), "VisibleAccounts"));
+            foreach (string staticName in new[] { "All", "Accounts", "AllAccounts", "VisibleAccounts", "ConnectedAccounts" })
+                accounts.AddRange(ConvertSourceToAccountsTcV2(ReadStaticMemberTcV2(accountType, staticName)));
 
-            if (result.Count == 0 && controlCenter != null)
+            foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                collected.AddRange(ToAccounts(source));
+
+            if (collected.Count == 0)
+                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+
+            return collected;
+        }
+
+        private IEnumerable<Account> GetAllAccountsSnapshot()
+        {
+            var collected = new List<Account>();
+            Type accountType = typeof(Account);
+
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "All")));
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "Accounts")));
+
+            if (controlCenter != null)
             {
-                AppendAccountsFromObject(result, ReadInstanceValue(controlCenter, "Accounts"));
-                AppendAccountsFromObject(result, ReadInstanceValue(controlCenter, "AllAccounts"));
+                foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                    collected.AddRange(ToAccounts(source));
+
+                if (collected.Count == 0)
+                    collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+            }
+
+            return collected;
+        }
+
+        private static List<Account> CollectAccountsFromControlCenter(ControlCenter cc)
+        {
+            var collected = new List<Account>();
+            if (cc == null)
+                return collected;
+
+            object[] roots = { cc, cc.DataContext };
+            string[] memberCandidates =
+            {
+                "Accounts",
+                "AllAccounts",
+                "DisplayedAccounts",
+                "VisibleAccounts",
+                "ConnectedAccounts",
+                "ActiveAccounts"
+            };
+
+            foreach (object root in roots)
+            {
+                foreach (string member in memberCandidates)
+                {
+                    object value = ReadMemberValue(root, member);
+                    if (value != null)
+                        yield return value;
+                }
+            }
+
+            // Fallback: alle statischen IEnumerable-Member von Account durchprobieren.
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+
+            foreach (PropertyInfo property in accountType.GetProperties(flags))
+            {
+                if (!property.CanRead)
+                    continue;
+
+                foreach (Account account in ToAccounts(property.GetValue(null, null)))
+                    yield return account;
+            }
+
+            foreach (FieldInfo field in accountType.GetFields(flags))
+            {
+                var fromItems = ToAccounts(selector.Items);
+                if (fromItems.Any())
+                    return fromItems;
 
                 object dc = controlCenter.DataContext;
                 AppendAccountsFromObject(result, ReadInstanceValue(dc, "Accounts"));
                 AppendAccountsFromObject(result, ReadInstanceValue(dc, "AllAccounts"));
             }
-
-            return result
-                .Where(a => a != null && !string.IsNullOrWhiteSpace(a.Name))
-                .GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(a => a.Name)
-                .ToList();
         }
 
-        private static void AppendAccountsFromObject(List<Account> destination, object source)
+        private static bool IsAccountAvailableTcV2(Account account)
         {
-            if (destination == null || source == null)
-                return;
+            if (account == null || string.IsNullOrWhiteSpace(account.Name))
+                return false;
 
-            IEnumerable<Account> typed = source as IEnumerable<Account>;
-            if (typed != null)
-            {
-                destination.AddRange(typed);
-                return;
-            }
+            bool? visible = ReadBooleanMember(account, "IsVisible")
+                            ?? ReadBooleanMember(account, "Visible")
+                            ?? ReadBooleanMember(account, "IsDisplayed")
+                            ?? ReadBooleanMember(account, "Display");
 
-            IEnumerable list = source as IEnumerable;
-            if (list == null)
-                return;
+            bool? visible = (v1 is bool b1) ? b1
+                          : (v2 is bool b2) ? b2
+                          : (v3 is bool b3) ? b3
+                          : (v4 is bool b4) ? b4
+                          : (bool?)null;
 
-            foreach (object item in list)
-            {
-                Account account = item as Account;
-                if (account != null)
-                    destination.Add(account);
-            }
+        private static bool? ReadBooleanMemberTc(object target, string memberName)
+        {
+            object value = ReadInstanceMemberTc(target, memberName);
+            return value is bool flag ? flag : (bool?)null;
         }
 
-        private static object ReadInstanceValue(object target, string member)
+        private static object ReadInstanceMemberTc(object target, string memberName)
         {
-            if (target == null || string.IsNullOrWhiteSpace(member))
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            Type t = target.GetType();
-            PropertyInfo p = t.GetProperty(member, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (p != null && p.CanRead)
-                return p.GetValue(target, null);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
 
-            FieldInfo f = t.GetField(member, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (f != null)
-                return f.GetValue(target);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null)
+                return field.GetValue(target);
 
             return null;
         }
 
-        private static object ReadStaticValue(Type type, string member)
+        private static object ReadStaticMemberValue(Type type, string memberName)
         {
-            if (type == null || string.IsNullOrWhiteSpace(member))
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            PropertyInfo p = type.GetProperty(member, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            if (p != null && p.CanRead)
-                return p.GetValue(null, null);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
 
-            FieldInfo f = type.GetField(member, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            if (f != null)
-                return f.GetValue(null);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null)
+                return field.GetValue(null);
 
             return null;
+        }
+
+        private static object ReadStaticMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            return field?.GetValue(null);
         }
     }
 }
