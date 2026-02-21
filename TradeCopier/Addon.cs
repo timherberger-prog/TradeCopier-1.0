@@ -7,6 +7,8 @@ using System.Linq;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Threading;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
@@ -127,53 +129,104 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private IList<Account> GetAvailableAccounts()
         {
-            var accounts = new List<Account>();
-            Type accountType = typeof(Account);
+            // Alternative, robuste Quelle: direkte Account-Container statt VisualTree-Parsing.
+            IEnumerable<Account> source = EnumerateStaticAccountSources();
+
+            if (!source.Any() && controlCenter != null)
+                source = EnumerateControlCenterAccountSources(controlCenter).SelectMany(ToAccounts);
+
+            return collected
+                .Where(IsAccountAvailable)
+                .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderBy(account => account.Name)
+                .ToList();
+        }
+
+        private IEnumerable<Account> GetDisplayedAccountsFromControlCenterSnapshot()
+        {
+            if (controlCenter == null)
+                return Enumerable.Empty<Account>();
 
             foreach (string staticName in new[] { "All", "Accounts", "AllAccounts", "VisibleAccounts", "ConnectedAccounts" })
                 accounts.AddRange(ConvertSourceToAccountsTcV2(ReadStaticMemberTcV2(accountType, staticName)));
 
-            if (accounts.Count == 0 && controlCenter != null)
+            foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                collected.AddRange(ToAccounts(source));
+
+            if (collected.Count == 0)
+                collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+
+            return collected;
+        }
+
+        private IEnumerable<Account> GetAllAccountsSnapshot()
+        {
+            var collected = new List<Account>();
+            Type accountType = typeof(Account);
+
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "All")));
+            collected.AddRange(ToAccounts(ReadStaticMemberValue(typeof(Account), "Accounts")));
+
+            if (controlCenter != null)
             {
-                object[] roots = { controlCenter, controlCenter.DataContext };
-                string[] members = { "Accounts", "AllAccounts", "DisplayedAccounts", "VisibleAccounts", "ConnectedAccounts", "ActiveAccounts" };
+                foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
+                    collected.AddRange(ToAccounts(source));
 
-                foreach (object root in roots)
+                if (collected.Count == 0)
+                    collected.AddRange(GetAccountsFromVisualTree(controlCenter));
+            }
+
+            return collected;
+        }
+
+        private static List<Account> CollectAccountsFromControlCenter(ControlCenter cc)
+        {
+            var collected = new List<Account>();
+            if (cc == null)
+                return collected;
+
+            object[] roots = { cc, cc.DataContext };
+            string[] memberCandidates =
+            {
+                "Accounts",
+                "AllAccounts",
+                "DisplayedAccounts",
+                "VisibleAccounts",
+                "ConnectedAccounts",
+                "ActiveAccounts"
+            };
+
+            foreach (object root in roots)
+            {
+                foreach (string member in memberCandidates)
                 {
-                    if (root == null)
-                        continue;
-
-                    foreach (string member in members)
-                        accounts.AddRange(ConvertSourceToAccountsTcV2(ReadInstanceMemberTcV2(root, member)));
+                    object value = ReadMemberValue(root, member);
+                    if (value != null)
+                        yield return value;
                 }
             }
 
-            return accounts
-                .Where(IsAccountAvailableTcV2)
-                .GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(a => a.Name)
-                .ToList();
-        }
+            // Fallback: alle statischen IEnumerable-Member von Account durchprobieren.
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
-        private static IEnumerable<Account> ConvertSourceToAccountsTcV2(object source)
-        {
-            if (source == null)
-                return Enumerable.Empty<Account>();
+            foreach (PropertyInfo property in accountType.GetProperties(flags))
+            {
+                if (!property.CanRead)
+                    continue;
 
-            ICollectionView view = source as ICollectionView;
-            if (view != null)
-                return view.Cast<object>().OfType<Account>();
+                foreach (Account account in ToAccounts(property.GetValue(null, null)))
+                    yield return account;
+            }
 
-            IEnumerable<Account> typed = source as IEnumerable<Account>;
-            if (typed != null)
-                return typed;
+            foreach (FieldInfo field in accountType.GetFields(flags))
+            {
+                var fromItems = ToAccounts(selector.Items);
+                if (fromItems.Any())
+                    return fromItems;
 
-            IEnumerable enumerable = source as IEnumerable;
-            if (enumerable == null)
-                return Enumerable.Empty<Account>();
-
-            return enumerable.Cast<object>().OfType<Account>();
+                return ToAccounts(selector.ItemsSource);
+            }
         }
 
         private static bool IsAccountAvailableTcV2(Account account)
@@ -181,10 +234,10 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (account == null || string.IsNullOrWhiteSpace(account.Name))
                 return false;
 
-            object v1 = ReadInstanceMemberTcV2(account, "IsVisible");
-            object v2 = ReadInstanceMemberTcV2(account, "Visible");
-            object v3 = ReadInstanceMemberTcV2(account, "IsDisplayed");
-            object v4 = ReadInstanceMemberTcV2(account, "Display");
+            bool? visible = ReadBooleanMember(account, "IsVisible")
+                            ?? ReadBooleanMember(account, "Visible")
+                            ?? ReadBooleanMember(account, "IsDisplayed")
+                            ?? ReadBooleanMember(account, "Display");
 
             bool? visible = (v1 is bool b1) ? b1
                           : (v2 is bool b2) ? b2
@@ -192,10 +245,13 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                           : (v4 is bool b4) ? b4
                           : (bool?)null;
 
-            return visible ?? true;
+        private static bool? ReadBooleanMemberTc(object target, string memberName)
+        {
+            object value = ReadInstanceMemberTc(target, memberName);
+            return value is bool flag ? flag : (bool?)null;
         }
 
-        private static object ReadInstanceMemberTcV2(object target, string memberName)
+        private static object ReadInstanceMemberTc(object target, string memberName)
         {
             if (target == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
@@ -206,10 +262,13 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return property.GetValue(target, null);
 
             FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            return field != null ? field.GetValue(target) : null;
+            if (field != null)
+                return field.GetValue(target);
+
+            return null;
         }
 
-        private static object ReadStaticMemberTcV2(Type type, string memberName)
+        private static object ReadStaticMemberValue(Type type, string memberName)
         {
             if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
@@ -219,7 +278,23 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                 return property.GetValue(null, null);
 
             FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            return field != null ? field.GetValue(null) : null;
+            if (field != null)
+                return field.GetValue(null);
+
+            return null;
+        }
+
+        private static object ReadStaticMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            return field?.GetValue(null);
         }
     }
 }
