@@ -138,8 +138,14 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (statusValue == null)
                 return true;
 
-            string normalized = statusValue.ToString().ToLowerInvariant();
-            return normalized.Contains("connected") || normalized.Contains("connectionstatus.connected");
+            string normalized = statusValue.ToString().Trim().ToLowerInvariant();
+
+            if (normalized.Contains("disconnected") || normalized.Contains("connectionstatus.disconnected"))
+                return false;
+
+            return normalized == "connected"
+                || normalized == "connectionstatus.connected"
+                || normalized.EndsWith(".connected", StringComparison.Ordinal);
         }
 
         private static object ReadMemberValue(object target, string memberName)
