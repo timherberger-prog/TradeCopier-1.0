@@ -122,93 +122,47 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private IList<Account> GetAvailableAccounts()
         {
-            // Sobald ein ControlCenter verfügbar ist, darf die Liste nur noch daraus kommen.
-            // Kein Fallback auf Account.All, damit keine stale Broker-Konten hängen bleiben.
-            if (controlCenter != null)
-                return GetAccountsFromControlCenter();
-
-            return EnumerateAccounts(Account.All)
-                .Where(account => account != null && !string.IsNullOrWhiteSpace(account.Name))
+            return GetAllAccountsSnapshot()
+                .Where(IsAccountAvailable)
                 .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
                 .OrderBy(account => account.Name)
                 .ToList();
         }
 
-        private IList<Account> GetAccountsFromControlCenter()
+        private static IEnumerable<Account> GetAllAccountsSnapshot()
         {
-            if (controlCenter == null)
-                return new List<Account>();
+            IEnumerable<Account> directAccounts = Account.All;
+            if (directAccounts != null && directAccounts.Any())
+                return directAccounts;
 
-            var accounts = new List<Account>();
+            Type globalsType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Globals");
+            if (globalsType == null)
+                return Enumerable.Empty<Account>();
 
-            accounts.AddRange(EnumerateAccounts(ReadMemberValue(controlCenter, "Accounts")));
-            accounts.AddRange(EnumerateAccounts(ReadMemberValue(controlCenter, "AllAccounts")));
+            object reflectedAccounts = ReadMemberValue(globalsType, "Accounts")
+                                      ?? ReadMemberValue(globalsType, "AllAccounts");
 
-            object selector = ReadMemberValue(controlCenter, "AccountSelector")
-                              ?? ReadMemberValue(controlCenter, "accountSelector")
-                              ?? ReadMemberValue(controlCenter, "AccountSelection")
-                              ?? ReadMemberValue(controlCenter, "accountSelection");
+            IEnumerable<Account> enumerable = reflectedAccounts as IEnumerable<Account>;
+            if (enumerable != null)
+                return enumerable;
 
-            accounts.AddRange(EnumerateAccounts(selector));
-            accounts.AddRange(EnumerateAccounts(ReadMemberValue(selector, "Accounts")));
-            accounts.AddRange(EnumerateAccounts(ReadMemberValue(selector, "ItemsSource")));
-            accounts.AddRange(EnumerateAccounts(ReadMemberValue(selector, "Items")));
+            var objectEnumerable = reflectedAccounts as System.Collections.IEnumerable;
+            if (objectEnumerable == null)
+                return Enumerable.Empty<Account>();
 
-            if (accounts.Count == 0)
-            {
-                foreach (MemberInfo member in controlCenter.GetType().GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-                {
-                    if (!member.Name.ToLowerInvariant().Contains("account"))
-                        continue;
-
-                    object value = ReadMemberValueSafe(controlCenter, member.Name);
-                    accounts.AddRange(EnumerateAccounts(value));
-                }
-            }
-
-            return accounts
-                .Where(account => account != null && !string.IsNullOrWhiteSpace(account.Name))
-                .GroupBy(account => account.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .OrderBy(account => account.Name)
-                .ToList();
+            return objectEnumerable.Cast<object>().OfType<Account>();
         }
 
-        private static IEnumerable<Account> EnumerateAccounts(object source)
+        private static bool IsAccountAvailable(Account account)
         {
-            return EnumerateObjects(source).OfType<Account>();
-        }
+            if (account == null)
+                return false;
 
-        private static IEnumerable<object> EnumerateObjects(object source)
-        {
-            if (source == null)
-                yield break;
-
-            if (source is string)
-                yield break;
-
-            if (source is System.Collections.IEnumerable enumerable)
-            {
-                foreach (object item in enumerable)
-                    yield return item;
-
-                yield break;
-            }
-
-            yield return source;
-        }
-
-        private static object ReadMemberValueSafe(object target, string memberName)
-        {
-            try
-            {
-                return ReadMemberValue(target, memberName);
-            }
-            catch
-            {
-                return null;
-            }
+            // Für die Anzeige im TradeCopier sollen alle im Control Center gelisteten Konten
+            // sichtbar bleiben. Der tatsächliche Orderfluss wird später vom NinjaTrader-Status
+            // gesteuert; die Auswahl sollte daher nicht durch Statusheuristiken gefiltert werden.
+            return !string.IsNullOrWhiteSpace(account.Name);
         }
 
         private static object ReadMemberValue(object target, string memberName)
@@ -230,11 +184,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public);
             if (property != null && property.CanRead)
                 return property.GetValue(null, null);
 
-            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public);
             return field?.GetValue(null);
         }
     }
