@@ -1,6 +1,10 @@
 #region Using declarations
+using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Windows;
+using System.Windows.Threading;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Tools;
@@ -15,15 +19,29 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
         private NTMenuItem toolsMenu;
         private TradeCopierEngine engine;
         private TradeCopierWindow window;
+        private DispatcherTimer accountSyncTimer;
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
                 Name = "Trade Copier";
             else if (State == State.Active)
+            {
                 engine = new TradeCopierEngine();
+                accountSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                accountSyncTimer.Tick += OnAccountSyncTick;
+            }
             else if (State == State.Terminated)
+            {
+                if (accountSyncTimer != null)
+                {
+                    accountSyncTimer.Tick -= OnAccountSyncTick;
+                    accountSyncTimer.Stop();
+                    accountSyncTimer = null;
+                }
+
                 engine?.Dispose();
+            }
         }
 
         protected override void OnWindowCreated(Window window)
@@ -76,12 +94,66 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             }
 
             window = new TradeCopierWindow(engine);
-            window.Closed += (_, __) => window = null;
+            window.Closed += (_, __) =>
+            {
+                window = null;
+                accountSyncTimer?.Stop();
+            };
 
-            var accounts = Account.All?.ToList();
-            window.LoadAccounts(accounts);
+            window.LoadAccounts(GetAvailableAccounts());
+            accountSyncTimer?.Start();
 
             window.Show();
+        }
+
+        private void OnAccountSyncTick(object sender, EventArgs e)
+        {
+            if (window == null)
+                return;
+
+            window.LoadAccounts(GetAvailableAccounts());
+        }
+
+        private static IList<Account> GetAvailableAccounts()
+        {
+            return (Account.All ?? Enumerable.Empty<Account>())
+                .Where(IsAccountAvailable)
+                .OrderBy(account => account.Name)
+                .ToList();
+        }
+
+        private static bool IsAccountAvailable(Account account)
+        {
+            if (account == null)
+                return false;
+
+            object connection = ReadMemberValue(account, "Connection") ?? ReadMemberValue(account, "AccountConnection");
+            if (connection == null)
+                return true;
+
+            object statusValue = ReadMemberValue(connection, "Status")
+                                 ?? ReadMemberValue(connection, "ConnectionStatus")
+                                 ?? ReadMemberValue(account, "ConnectionStatus");
+
+            if (statusValue == null)
+                return true;
+
+            string normalized = statusValue.ToString().ToLowerInvariant();
+            return normalized.Contains("connected") || normalized.Contains("connectionstatus.connected");
+        }
+
+        private static object ReadMemberValue(object target, string memberName)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            Type type = target.GetType();
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public);
+            if (property != null && property.CanRead)
+                return property.GetValue(target, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public);
+            return field?.GetValue(target);
         }
     }
 }
