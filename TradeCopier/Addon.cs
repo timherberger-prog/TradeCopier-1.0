@@ -126,61 +126,37 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private static IEnumerable<Account> GetAllAccountsSnapshot()
         {
-            var accounts = new List<Account>();
-
-            accounts.AddRange(EnumerateAccounts(Account.All));
+            IEnumerable<Account> directAccounts = Account.All;
+            if (directAccounts != null && directAccounts.Any())
+                return directAccounts;
 
             Type globalsType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Globals");
-            if (globalsType != null)
-            {
-                accounts.AddRange(EnumerateAccounts(ReadMemberValue(globalsType, "Accounts")));
-                accounts.AddRange(EnumerateAccounts(ReadMemberValue(globalsType, "AllAccounts")));
-            }
+            if (globalsType == null)
+                return Enumerable.Empty<Account>();
 
-            Type connectionType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Connection");
-            if (connectionType != null)
-            {
-                object connections = ReadMemberValue(connectionType, "Connections")
-                                     ?? ReadMemberValue(connectionType, "All")
-                                     ?? ReadMemberValue(connectionType, "AllConnections");
+            object reflectedAccounts = ReadMemberValue(globalsType, "Accounts")
+                                      ?? ReadMemberValue(globalsType, "AllAccounts");
 
-                foreach (object connection in EnumerateObjects(connections))
-                {
-                    accounts.AddRange(EnumerateAccounts(ReadMemberValue(connection, "Accounts")));
-                    accounts.AddRange(EnumerateAccounts(ReadMemberValue(connection, "AccountList")));
-                }
-            }
+            IEnumerable<Account> enumerable = reflectedAccounts as IEnumerable<Account>;
+            if (enumerable != null)
+                return enumerable;
 
-            return accounts;
+            var objectEnumerable = reflectedAccounts as System.Collections.IEnumerable;
+            if (objectEnumerable == null)
+                return Enumerable.Empty<Account>();
+
+            return objectEnumerable.Cast<object>().OfType<Account>();
         }
 
         private static bool IsAccountAvailable(Account account)
         {
-            return account != null && !string.IsNullOrWhiteSpace(account.Name);
-        }
+            if (account == null)
+                return false;
 
-        private static IEnumerable<Account> EnumerateAccounts(object source)
-        {
-            return EnumerateObjects(source).OfType<Account>();
-        }
-
-        private static IEnumerable<object> EnumerateObjects(object source)
-        {
-            if (source == null)
-                yield break;
-
-            if (source is string)
-                yield break;
-
-            if (source is System.Collections.IEnumerable enumerable)
-            {
-                foreach (object item in enumerable)
-                    yield return item;
-
-                yield break;
-            }
-
-            yield return source;
+            // Für die Anzeige im TradeCopier sollen alle im Control Center gelisteten Konten
+            // sichtbar bleiben. Der tatsächliche Orderfluss wird später vom NinjaTrader-Status
+            // gesteuert; die Auswahl sollte daher nicht durch Statusheuristiken gefiltert werden.
+            return !string.IsNullOrWhiteSpace(account.Name);
         }
 
         private static object ReadMemberValue(object target, string memberName)
@@ -202,11 +178,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (type == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public);
             if (property != null && property.CanRead)
                 return property.GetValue(null, null);
 
-            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public);
             return field?.GetValue(null);
         }
     }
