@@ -38,7 +38,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             };
 
             menuItem.Click += OnMenuClick;
-            cc.MainMenu.Items.Add(menuItem);
+            cc.MainMenu.Add(menuItem);
         }
 
         protected override void OnWindowDestroyed(Window window)

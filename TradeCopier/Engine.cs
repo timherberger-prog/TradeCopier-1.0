@@ -2,8 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using NinjaTrader.Cbi;
-using NinjaTrader.Core.FloatingPoint;
 using NinjaTrader.NinjaScript;
 #endregion
 
@@ -121,20 +121,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private void SubmitFollowerEntry(Account follower, Instrument instrument, OrderAction action, int quantity)
         {
-            if (follower == null || instrument == null || quantity <= 0)
-                return;
-
-            // Marktorder als erste robuste Version.
-            follower.CreateOrder(
-                instrument,
-                action,
-                OrderType.Market,
-                TimeInForce.Day,
-                quantity,
-                0,
-                0,
-                string.Empty,
-                "LeadCopyEntry");
+            SubmitMarketOrder(follower, instrument, action, quantity, "LeadCopyEntry");
         }
 
         private void FlattenFollowers(Instrument instrument)
@@ -145,21 +132,123 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                     continue;
 
                 Position pos = follower.Positions.FirstOrDefault(p => p.Instrument == instrument);
-                if (pos == null || pos.Quantity.ApproxCompare(0) == 0)
+                if (pos == null || pos.Quantity == 0)
                     continue;
 
                 OrderAction exitAction = pos.Quantity > 0 ? OrderAction.Sell : OrderAction.BuyToCover;
+                SubmitMarketOrder(follower, instrument, exitAction, Math.Abs(pos.Quantity), "LeadProtectionFlatten");
+            }
+        }
 
-                follower.CreateOrder(
-                    instrument,
-                    exitAction,
-                    OrderType.Market,
-                    TimeInForce.Day,
-                    Math.Abs(pos.Quantity),
-                    0,
-                    0,
-                    string.Empty,
-                    "LeadProtectionFlatten");
+        private static void SubmitMarketOrder(Account account, Instrument instrument, OrderAction action, int quantity, string signalName)
+        {
+            if (account == null || instrument == null || quantity <= 0)
+                return;
+
+            Order order = CreateOrderCompat(account, instrument, action, quantity, signalName);
+            if (order == null)
+                return;
+
+            SubmitOrderCompat(account, order);
+        }
+
+        private static Order CreateOrderCompat(Account account, Instrument instrument, OrderAction action, int quantity, string signalName)
+        {
+            MethodInfo[] methods = typeof(Account)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .Where(m => m.Name == "CreateOrder")
+                .ToArray();
+
+            foreach (MethodInfo method in methods)
+            {
+                ParameterInfo[] parameters = method.GetParameters();
+                object[] args = new object[parameters.Length];
+                bool failed = false;
+
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    ParameterInfo parameter = parameters[i];
+                    string parameterName = parameter.Name?.ToLowerInvariant() ?? string.Empty;
+                    Type parameterType = parameter.ParameterType;
+
+                    object value = null;
+                    if (parameterType == typeof(Instrument))
+                        value = instrument;
+                    else if (parameterType == typeof(OrderAction))
+                        value = action;
+                    else if (parameterType == typeof(OrderType))
+                        value = OrderType.Market;
+                    else if (parameterType == typeof(TimeInForce))
+                        value = TimeInForce.Day;
+                    else if (parameterType == typeof(int) && parameterName.Contains("quantity"))
+                        value = quantity;
+                    else if (parameterType == typeof(double))
+                        value = 0d;
+                    else if (parameterType == typeof(string) && (parameterName.Contains("name") || parameterName.Contains("signal")))
+                        value = signalName;
+                    else if (parameterType == typeof(string))
+                        value = string.Empty;
+                    else if (parameterType == typeof(DateTime))
+                        value = DateTime.MinValue;
+                    else if (parameterType.IsEnum)
+                        value = Enum.GetValues(parameterType).GetValue(0);
+                    else if (parameter.HasDefaultValue)
+                        value = parameter.DefaultValue;
+                    else if (!parameterType.IsValueType)
+                        value = null;
+                    else
+                        failed = true;
+
+                    if (failed)
+                        break;
+
+                    args[i] = value;
+                }
+
+                if (failed)
+                    continue;
+
+                try
+                {
+                    return method.Invoke(account, args) as Order;
+                }
+                catch
+                {
+                    // Nächsten Overload probieren.
+                }
+            }
+
+            return null;
+        }
+
+        private static void SubmitOrderCompat(Account account, Order order)
+        {
+            MethodInfo[] methods = typeof(Account)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .Where(m => m.Name == "Submit")
+                .ToArray();
+
+            foreach (MethodInfo method in methods)
+            {
+                ParameterInfo[] parameters = method.GetParameters();
+                object[] args;
+
+                if (parameters.Length == 1 && parameters[0].ParameterType == typeof(Order))
+                    args = new object[] { order };
+                else if (parameters.Length == 1 && parameters[0].ParameterType == typeof(Order[]))
+                    args = new object[] { new[] { order } };
+                else
+                    continue;
+
+                try
+                {
+                    method.Invoke(account, args);
+                    return;
+                }
+                catch
+                {
+                    // Nächsten Overload probieren.
+                }
             }
         }
 
