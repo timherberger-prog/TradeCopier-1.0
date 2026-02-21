@@ -116,10 +116,34 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
         private static IList<Account> GetAvailableAccounts()
         {
-            return (Account.All ?? Enumerable.Empty<Account>())
+            return GetAllAccountsSnapshot()
                 .Where(IsAccountAvailable)
                 .OrderBy(account => account.Name)
                 .ToList();
+        }
+
+        private static IEnumerable<Account> GetAllAccountsSnapshot()
+        {
+            IEnumerable<Account> directAccounts = Account.All;
+            if (directAccounts != null && directAccounts.Any())
+                return directAccounts;
+
+            Type globalsType = typeof(Account).Assembly.GetType("NinjaTrader.Cbi.Globals");
+            if (globalsType == null)
+                return Enumerable.Empty<Account>();
+
+            object reflectedAccounts = ReadMemberValue(globalsType, "Accounts")
+                                      ?? ReadMemberValue(globalsType, "AllAccounts");
+
+            IEnumerable<Account> enumerable = reflectedAccounts as IEnumerable<Account>;
+            if (enumerable != null)
+                return enumerable;
+
+            var objectEnumerable = reflectedAccounts as System.Collections.IEnumerable;
+            if (objectEnumerable == null)
+                return Enumerable.Empty<Account>();
+
+            return objectEnumerable.Cast<object>().OfType<Account>();
         }
 
         private static bool IsAccountAvailable(Account account)
@@ -127,25 +151,10 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (account == null)
                 return false;
 
-            object connection = ReadMemberValue(account, "Connection") ?? ReadMemberValue(account, "AccountConnection");
-            if (connection == null)
-                return true;
-
-            object statusValue = ReadMemberValue(connection, "Status")
-                                 ?? ReadMemberValue(connection, "ConnectionStatus")
-                                 ?? ReadMemberValue(account, "ConnectionStatus");
-
-            if (statusValue == null)
-                return true;
-
-            string normalized = statusValue.ToString().Trim().ToLowerInvariant();
-
-            if (normalized.Contains("disconnected") || normalized.Contains("connectionstatus.disconnected"))
-                return false;
-
-            return normalized == "connected"
-                || normalized == "connectionstatus.connected"
-                || normalized.EndsWith(".connected", StringComparison.Ordinal);
+            // Für die Anzeige im TradeCopier sollen alle im Control Center gelisteten Konten
+            // sichtbar bleiben. Der tatsächliche Orderfluss wird später vom NinjaTrader-Status
+            // gesteuert; die Auswahl sollte daher nicht durch Statusheuristiken gefiltert werden.
+            return !string.IsNullOrWhiteSpace(account.Name);
         }
 
         private static object ReadMemberValue(object target, string memberName)
@@ -160,6 +169,19 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
 
             FieldInfo field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public);
             return field?.GetValue(target);
+        }
+
+        private static object ReadMemberValue(Type type, string memberName)
+        {
+            if (type == null || string.IsNullOrWhiteSpace(memberName))
+                return null;
+
+            PropertyInfo property = type.GetProperty(memberName, BindingFlags.Static | BindingFlags.Public);
+            if (property != null && property.CanRead)
+                return property.GetValue(null, null);
+
+            FieldInfo field = type.GetField(memberName, BindingFlags.Static | BindingFlags.Public);
+            return field?.GetValue(null);
         }
     }
 }
