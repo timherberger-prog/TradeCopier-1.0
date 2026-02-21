@@ -148,7 +148,8 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             if (controlCenter == null)
                 return Enumerable.Empty<Account>();
 
-            var collected = new List<Account>();
+            foreach (string staticName in new[] { "All", "Accounts", "AllAccounts", "VisibleAccounts", "ConnectedAccounts" })
+                accounts.AddRange(ConvertSourceToAccountsTcV2(ReadStaticMemberTcV2(accountType, staticName)));
 
             foreach (object source in EnumerateControlCenterAccountSources(controlCenter))
                 collected.AddRange(ToAccounts(source));
@@ -228,7 +229,7 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
             }
         }
 
-        private static bool IsAccountAvailable(Account account)
+        private static bool IsAccountAvailableTcV2(Account account)
         {
             if (account == null || string.IsNullOrWhiteSpace(account.Name))
                 return false;
@@ -238,8 +239,11 @@ namespace NinjaTrader.NinjaScript.AddOns.TradeCopier
                             ?? ReadBooleanMember(account, "IsDisplayed")
                             ?? ReadBooleanMember(account, "Display");
 
-            return visible ?? true;
-        }
+            bool? visible = (v1 is bool b1) ? b1
+                          : (v2 is bool b2) ? b2
+                          : (v3 is bool b3) ? b3
+                          : (v4 is bool b4) ? b4
+                          : (bool?)null;
 
         private static bool? ReadBooleanMemberTc(object target, string memberName)
         {
