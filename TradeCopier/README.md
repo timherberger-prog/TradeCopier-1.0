@@ -13,7 +13,7 @@ Diese erste Version setzt ein AddOn mit klassischer NinjaTrader-Struktur auf:
 3. **Protection-Orders** (SL/TP) werden **nicht** auf Follow-Konten angelegt.
 4. Wenn am Lead eine Protection-Order ausführt (z. B. Stop oder Target), werden die Follow-Konten auf demselben Instrument per Market-Order geflattet.
 5. Die UI zeigt eine **Statusleiste** (grün/rot) für aktiv/gestoppt.
-6. Die Kontolisten werden periodisch mit den aktuell im Control Center verfügbaren/verbundenen Konten synchronisiert.
+6. Die Kontolisten werden periodisch mit den im Control Center tatsächlich angezeigten Konten synchronisiert (inkl. Aus-/Einblenden je nach Control-Center-Auswahl).
 
 ## Wichtiger Hinweis
 
